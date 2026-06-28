@@ -1,115 +1,235 @@
-# ETL Pipeline for International Sanctions Lists
+# ETL Pipeline para Listas Internacionales de Sanciones
 
-## Overview
+Proyecto desarrollado como prueba técnica y como ejercicio de diseño de una arquitectura ETL escalable para la integración de listas internacionales de sanciones.
 
-This project implements an incremental ETL pipeline capable of ingesting international sanctions lists from multiple public sources, transforming heterogeneous data into a unified canonical model and storing the results in DuckDB.
-
-The pipeline was designed following software engineering principles such as separation of responsibilities, modularity and extensibility, making it easy to incorporate new sanction sources in the future.
-
-Currently implemented sources:
-
-* OFAC SDN List (United States Treasury)
-* United Nations Consolidated Sanctions List
+Actualmente el pipeline consume información desde diferentes organismos internacionales, normaliza los registros hacia un modelo canónico único y los almacena en DuckDB aplicando estrategias de Change Data Capture (CDC).
 
 ---
 
-## Main Features
+# Objetivos del proyecto
 
-* Modular ETL architecture
-* Incremental loading (Change Data Capture)
-* Hash-based change detection
-* Canonical data model
-* Multiple data source support
-* Automatic download of source files
-* XML parsing using streaming (`iterparse`)
-* DuckDB persistence
-* Unit tests
-* Structured logging
+El propósito principal del proyecto es construir una arquitectura que permita incorporar nuevas fuentes de sanciones sin modificar el núcleo del pipeline.
+
+Se busca que cada nueva fuente únicamente implemente la lógica necesaria para:
+
+- descargar la información
+- interpretar el formato original
+- transformarla al modelo común
+
+Todo el resto del proceso permanece exactamente igual.
 
 ---
 
-## Project Structure
+# Características
+
+Actualmente el proyecto incluye:
+
+- Arquitectura ETL desacoplada
+- Modelo canónico independiente de la fuente
+- Descarga automática de archivos
+- Soporte para XML y JSON
+- Parsers especializados por organismo
+- Persistencia en DuckDB
+- Detección de cambios mediante hashes
+- Actualización incremental (CDC)
+- Desactivación lógica de registros eliminados
+- Registro automático de fuentes
+- Logging detallado
+- Pruebas unitarias
+
+---
+
+# Fuentes implementadas
+
+Actualmente el pipeline soporta las siguientes listas internacionales.
+
+| Fuente | Formato | Estado |
+|---------|----------|---------|
+| OFAC SDN | XML (ZIP) | ✅ |
+| United Nations Consolidated List | XML | ✅ |
+
+Fuentes planeadas:
+
+- SEC FCPA Enforcement Actions
+- Unión Europea
+- UK Sanctions List
+- Interpol Red Notices
+
+---
+
+# Arquitectura
+
+```
+Fuente
+    │
+    ▼
+Downloader
+    │
+    ▼
+Parser específico
+    │
+    ▼
+CommonSanctionRecord
+    │
+    ▼
+CanonicalFactory
+    │
+    ▼
+CanonicalSanction
+    │
+    ▼
+Change Detector (CDC)
+    │
+    ▼
+DuckDBRepository
+```
+
+Cada etapa tiene una única responsabilidad y puede evolucionar de manera independiente.
+
+---
+
+# Estructura del proyecto
 
 ```text
 pipeline/
-│
-├── ingestion/
-├── parsers/
-├── normalization/
-├── runner/
-├── registry/
-└── storage/
+
+    ingestion/
+        base_source.py
+        ofac.py
+        un.py
+
+    parsers/
+        ofac_parser.py
+        un_parser.py
+
+    normalization/
+        common_record.py
+        canonical_factory.py
+        schemas.py
+        change_detector.py
+
+    storage/
+        duckdb_repository.py
+
+    registry/
+        source_registry.py
+
+    runner/
+        pipeline_runner.py
+
+run_pipeline.py
 
 utils/
 
+config/
+
 tests/
 
-data/
+docs/
 ```
 
 ---
 
-## ETL Workflow
+# Flujo de ejecución
 
-```text
-Source Registry
-        │
-        ▼
-Pipeline Runner
-        │
-        ▼
-Download Source
-        │
-        ▼
-Parser
-        │
-        ▼
-CommonSanctionRecord
-        │
-        ▼
-CanonicalFactory
-        │
-        ▼
-CanonicalSanction
-        │
-        ▼
-Change Detector (CDC)
-        │
-        ▼
-DuckDB Repository
+Para cada fuente registrada:
+
+1. Descarga el archivo original.
+2. Ejecuta el parser correspondiente.
+3. Genera registros Python.
+4. Convierte todos los registros al modelo canónico.
+5. Calcula un hash SHA256 del contenido.
+6. Compara los hashes contra DuckDB.
+7. Inserta registros nuevos.
+8. Actualiza registros modificados.
+9. Desactiva registros que desaparecieron de la fuente.
+
+---
+
+# Change Data Capture
+
+El proyecto implementa un mecanismo sencillo de CDC basado en hashes.
+
+Cada registro canónico genera un SHA256 calculado sobre todos sus campos relevantes.
+
+Durante una nueva ejecución:
+
+- Si el registro no existe → INSERT
+- Si existe y el hash cambió → UPDATE
+- Si existe y el hash es igual → No se realiza ninguna operación
+- Si un registro desaparece de la fuente → activo = FALSE
+
+Este mecanismo evita reprocesar registros sin cambios y reduce considerablemente el costo de actualización.
+
+---
+
+# Modelo Canónico
+
+Todas las fuentes se transforman al mismo esquema.
+
+Campos principales:
+
+- id_registro
+- fuente
+- tipo_sujeto
+- nombres
+- apellidos
+- aliases
+- nacionalidad
+- numero_documento
+- tipo_sancion
+- programa_sancion
+- codigo_referencia
+- url_referencia
+- comentarios
+- activo
+- fecha_ingesta
+- hash_contenido
+
+Esto permite incorporar nuevas fuentes sin modificar la capa de almacenamiento.
+
+---
+
+# Tecnologías
+
+- Python 3.12
+- DuckDB
+- Pydantic
+- Requests
+- lxml
+- Pytest
+
+---
+
+# Ejecución
+
+Crear ambiente virtual
+
+```bash
+python -m venv .venv
 ```
 
----
+Activar
 
-## Incremental Processing
+Windows
 
-Instead of loading every record on every execution, the pipeline performs Change Data Capture (CDC).
+```bash
+.venv\Scripts\activate
+```
 
-Each canonical record generates a deterministic SHA256 hash based on its content.
+Linux
 
-During execution the pipeline classifies records into four categories:
+```bash
+source .venv/bin/activate
+```
 
-* New records
-* Updated records
-* Unchanged records
-* Removed records (logical deletion)
+Instalar dependencias
 
-This dramatically reduces unnecessary database writes.
+```bash
+pip install -r requirements.txt
+```
 
----
-
-## Technologies
-
-* Python 3.12
-* DuckDB
-* Pydantic
-* lxml
-* Requests
-* Pytest
-
----
-
-## Running
+Ejecutar
 
 ```bash
 python -m pipeline.run_pipeline
@@ -117,36 +237,41 @@ python -m pipeline.run_pipeline
 
 ---
 
-## Example Output
+# Ejemplo de salida
 
 ```text
-Source        : OFAC
+============================================================
 
-Read          : 19122
-New           : 0
-Updated       : 0
-Unchanged     : 19122
-Deactivated   : 0
+Fuente        : OFAC
 
-----------------------------------------
+Leídos        : 19122
 
-Source        : UN
+Nuevos        : 5
 
-Read          : 1002
-New           : 0
-Updated       : 0
-Unchanged     : 1002
-Deactivated   : 0
+Actualizados  : 3
+
+Sin cambios   : 19110
+
+Desactivados  : 4
+
+Tiempo        : 00:01:04
+
+============================================================
 ```
 
 ---
 
-## Future Improvements
+# Próximos pasos
 
-* SEC FCPA source
-* EU Sanctions List
-* Fuzzy name matching
-* REST API
-* Dashboard
-* Docker deployment
-* Airflow scheduling
+- Incorporar nuevas listas internacionales
+- Matching entre listas
+- Exposición mediante API REST
+- Dashboard de monitoreo
+- Versionamiento histórico
+- Métricas de calidad de datos
+
+---
+
+# Autor
+
+Proyecto desarrollado por **Ginna Valencia** como ejercicio de arquitectura ETL y prueba técnica para integración de listas internacionales de sanciones.
