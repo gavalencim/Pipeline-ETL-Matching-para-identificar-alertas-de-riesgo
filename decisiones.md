@@ -1,136 +1,198 @@
-# Design Decisions
+# Decisiones de Arquitectura
 
-## Why a Canonical Model?
-
-Each sanctions source publishes information using different field names, formats and structures.
-
-Instead of adapting the storage layer for every source, the project defines a single canonical representation (`CanonicalSanction`).
-
-Every parser transforms its native format into this shared model.
-
-Benefits:
-
-* Simplifies persistence.
-* Makes the system extensible.
-* Reduces duplicated logic.
+Este documento describe las principales decisiones de diseño adoptadas durante el desarrollo del proyecto y las razones detrás de ellas.
 
 ---
 
-## Why CommonSanctionRecord?
+# Objetivo arquitectónico
 
-Parsers should not instantiate database models directly.
+Desde el inicio el objetivo fue construir un pipeline que pudiera crecer fácilmente conforme se incorporaran nuevas fuentes de información.
 
-Instead, every parser returns a lightweight intermediate structure called `CommonSanctionRecord`.
+Se priorizó una arquitectura desacoplada, donde cada componente tuviera una única responsabilidad.
 
-Responsibilities:
+---
 
-Parser
+# Separación entre extracción y parsing
+
+Cada fuente implementa únicamente tres responsabilidades:
+
+- descargar los datos
+- indicar qué parser utilizar
+- identificar el nombre de la fuente
+
+Toda la lógica de interpretación del formato original vive exclusivamente dentro del parser.
+
+Esto evita mezclar responsabilidades y facilita el mantenimiento.
+
+---
+
+# Modelo Canónico
+
+Cada organismo publica información diferente.
+
+En lugar de crear tablas específicas para cada uno, todos los registros se transforman hacia un único modelo común.
+
+Esto permite:
+
+- consultas homogéneas
+- matching entre fuentes
+- agregar nuevas listas sin modificar la base de datos
+
+---
+
+# Uso de Pydantic
+
+Los registros normalizados se representan mediante modelos Pydantic.
+
+Esto proporciona:
+
+- validación automática
+- tipado fuerte
+- serialización sencilla
+- menor cantidad de errores durante la normalización
+
+---
+
+# DuckDB como motor de almacenamiento
+
+Se eligió DuckDB debido a que:
+
+- funciona como un archivo local
+- no requiere servidor
+- ofrece excelente rendimiento analítico
+- facilita la distribución del proyecto
+
+Para una prueba técnica resulta una excelente alternativa frente a PostgreSQL.
+
+---
+
+# Registro centralizado de fuentes
+
+Se implementó un SourceRegistry encargado de registrar todas las fuentes disponibles.
+
+El PipelineRunner nunca conoce qué organismos existen.
+
+Simplemente solicita:
+
+```python
+SourceRegistry.get_sources()
+```
+
+Esto permite agregar nuevas fuentes modificando únicamente el registro.
+
+---
+
+# PipelineRunner como orquestador
+
+Toda la coordinación del flujo ETL se concentra en PipelineRunner.
+
+Su responsabilidad consiste únicamente en orquestar:
+
+Extracción
 
 ↓
 
-Extract source-specific fields
+Parsing
 
 ↓
 
-Return standardized dictionary
+Normalización
 
 ↓
 
-CanonicalFactory
+CDC
 
 ↓
 
-CanonicalSanction
+Persistencia
 
-This separation keeps parsers focused only on extraction.
-
----
-
-## Why a CanonicalFactory?
-
-The factory centralizes all normalization logic.
-
-Responsibilities:
-
-* Create CanonicalSanction objects.
-* Generate ingestion timestamp.
-* Generate content hash.
-* Apply default values.
-
-This avoids duplicating normalization logic across multiple parsers.
+Cada etapa permanece completamente desacoplada.
 
 ---
 
-## Why Change Data Capture?
+# Change Data Capture
 
-Reloading every record on every execution is inefficient.
+El proyecto implementa CDC mediante hashes SHA256.
 
-Instead, the pipeline computes a SHA256 hash for every canonical record.
+Cada registro genera un hash calculado sobre todos los atributos relevantes.
 
-By comparing hashes with existing database values, records are classified as:
+Durante nuevas ejecuciones:
 
-* Insert
-* Update
-* Unchanged
+- hash nuevo → INSERT
+- hash diferente → UPDATE
+- hash igual → se omite
+- registro ausente → activo = FALSE
 
-Benefits:
-
-* Faster executions
-* Less database I/O
-* Easier auditing
+Este enfoque resulta sencillo, rápido y suficientemente robusto para listas internacionales que no ofrecen mecanismos propios de versionamiento.
 
 ---
 
-## Why DuckDB?
+# Soft Delete
 
-DuckDB was selected because it provides:
+Los registros nunca se eliminan físicamente.
 
-* Zero configuration
-* Embedded database
-* Excellent analytical performance
-* SQL compatibility
-* Portable single-file database
+Cuando desaparecen de la fuente se actualiza:
 
-It is ideal for local ETL pipelines.
+```text
+activo = FALSE
+```
 
----
-
-## Why a Repository Layer?
-
-All SQL is isolated inside `DuckDBRepository`.
-
-The rest of the project never interacts directly with SQL.
-
-Advantages:
-
-* Easier maintenance
-* Better testing
-* Clear separation of responsibilities
+Esto conserva el histórico y permite auditoría.
 
 ---
 
-## Why a Source Registry?
+# Índice en memoria
 
-Instead of hardcoding sources inside the pipeline, a registry keeps track of all available sources.
+Antes de iniciar la comparación de cambios se carga únicamente:
 
-Adding a new source only requires:
+- fuente
+- id_registro
+- hash
 
-1. Create the ingestion class.
-2. Create its parser.
-3. Register it.
-
-No changes are required in the pipeline execution logic.
+Esto reduce significativamente la cantidad de consultas durante el procesamiento masivo.
 
 ---
 
-## Why Streaming XML Parsing?
+# Parsers independientes
 
-Large XML files can contain tens of thousands of records.
+Cada formato posee su propio parser.
 
-Instead of loading the entire document into memory, parsers use `lxml.iterparse()`.
+Actualmente:
 
-Benefits:
+- OFACParser
+- UNParser
 
-* Constant memory usage
-* Better scalability
+Esto evita grandes bloques de código con múltiples condiciones según la fuente.
+
+---
+
+# Organización del proyecto
+
+La estructura sigue una separación por responsabilidades:
+
+- ingestion
+- parsers
+- normalization
+- storage
+- registry
+- runner
+- utils
+
+Esta distribución facilita localizar rápidamente cualquier componente del pipeline.
+
+---
+
+# Principios aplicados
+
+Durante el desarrollo se procuró seguir varios principios de ingeniería de software:
+
+- Responsabilidad única (SRP)
+- Abierto/Cerrado (OCP)
+- Separación de responsabilidades
+- Bajo acoplamiento
+- Alta cohesión
+- Reutilización de componentes
+- Escalabilidad
+
+Aunque el proyecto corresponde a una prueba técnica, la arquitectura fue diseñada pensando en un sistema que pueda evolucionar incorporando nuevas fuentes internacionales con modificaciones mínimas.
 * Faster processing
