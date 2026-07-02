@@ -2,4 +2,9 @@
 data/raw/
 
 # Archivos grandes
-*.xml.venv/\n__pycache__/\n*.pyc\n*.pyd\ndata/*.duckdb
+*.xml
+.venv/
+__pycache__/
+*.pyc
+*.pyd
+data/*.duckdb
